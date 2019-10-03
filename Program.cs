@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Net.Http.Headers;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using TestThreadpool.Models;
@@ -29,41 +29,113 @@ namespace TestThreadpool
             return products;
         }
 
+
+        class TryTakeDemo
+        {
+            // Demonstrates:
+            //      BlockingCollection<T>.Add()
+            //      BlockingCollection<T>.CompleteAdding()
+            //      BlockingCollection<T>.TryTake()
+            //      BlockingCollection<T>.IsCompleted
+            public static void BC_TryTake()
+            {
+                List<Product> products = InitialProducts();
+                // Construct and fill our BlockingCollection
+                using (BlockingCollection<Product> bc = new BlockingCollection<Product>())
+                {
+                    for (int i = 0; i < products.Count; i++)
+                    {
+                        bc.Add(products[i]);
+                    }
+                    bc.CompleteAdding();
+                    int outerSum = 0;
+
+                    // Delegate for consuming the BlockingCollection and adding up all items
+                    Action action = () =>
+                    {
+                        using (var context = new ProductContext())
+                        {
+                            Product localItem;
+                            Console.WriteLine("Thread: {0}", Thread.CurrentThread.ManagedThreadId);
+                            //while (bc.TryTake(out localItem))
+                            //{
+                            //    Console.WriteLine(" Take:{0}, Thread: {1}", localItem.Email, Thread.CurrentThread.ManagedThreadId);
+                            //    context.Products.Add(localItem);
+                            //    context.SaveChanges();
+                            //}
+                            while (!bc.IsCompleted)
+                            {
+                                //int nextItem;
+                                try
+                                {
+                                    if (!bc.TryTake(out localItem, 0))
+                                    {
+                                        Console.WriteLine(" Take Blocked");
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine(" Take:{0}, Thread: {1}", localItem.Email, Thread.CurrentThread.ManagedThreadId);
+                                        context.Products.Add(localItem);
+                                        context.SaveChanges();
+                                    }
+                                }
+
+                                catch (OperationCanceledException)
+                                {
+                                    Console.WriteLine("Taking canceled.");
+                                    break;
+                                }
+                                //Thread.SpinWait(5000000);
+                            }
+                            Console.WriteLine("\r\n Success");
+                            Console.WriteLine("\r\nNo more items to take.");
+                        }
+                    };
+                    // Launch three parallel actions to consume the BlockingCollection
+                    Parallel.Invoke(action, action, action);
+                    Console.WriteLine("bc.IsCompleted = {0} (should be true)", bc.IsCompleted);
+                }
+            }
+        }
+
         static void Main()
         {
-            Console.WriteLine("Start");
-            List<Product> products = InitialProducts();
-            // The token source for issuing the cancelation request.
-            CancellationTokenSource cts = new CancellationTokenSource();
-
-            // A blocking collection that can hold no more than 100 items at a time.
-            BlockingCollection<int> numberCollection = new BlockingCollection<int>(20);
-
-            // Set console buffer to hold our prodigious output.
-            //Console.SetBufferSize(80, 2000);
-
-            // The simplest UI thread ever invented.
-            Task.Run(() =>
-            {
-                if (Console.ReadKey(true).KeyChar == 'c')
-                    cts.Cancel();
-            });
-
-            // Start one producer and one consumer.
-            Task t1 = Task.Run(() => NonBlockingConsumer(numberCollection, cts.Token));
-            Task t2 = Task.Run(() => NonBlockingProducer(numberCollection, cts.Token, products));
-
-            // Wait for the tasks to complete execution
-            Task.WaitAll(t1, t2);
-
-            cts.Dispose();
-            Console.WriteLine("Press the Enter key to exit.");
-            Console.ReadLine();
+            Stopwatch stopwatch = new Stopwatch();
+            stopwatch.Start();
+            TryTakeDemo.BC_TryTake();
+            stopwatch.Stop();
+            Console.WriteLine("Time consuming {0}", stopwatch.Elapsed);
+            Console.WriteLine("Press any key to exit.");
+            Console.ReadKey();
         }
+
+        //static void Main()
+        //{
+        //    List<Product> products = InitialProducts();
+        //    Stopwatch stopwatch = new Stopwatch();
+        //    stopwatch.Start();
+        //    CancellationTokenSource cts = new CancellationTokenSource();
+        //    BlockingCollection<int> numberCollection = new BlockingCollection<int>(20);
+        //    Task.Run(() =>
+        //    {
+        //        if (Console.ReadKey(true).KeyChar == 'c')
+        //            cts.Cancel();
+        //    });
+
+        //    Task t1 = Task.Run(() => NonBlockingConsumer(numberCollection, cts.Token));
+        //    Task t2 = Task.Run(() => NonBlockingProducer(numberCollection, cts.Token, products));
+        //    Task.WaitAll(t1, t2);
+
+        //    stopwatch.Stop();
+        //    Console.WriteLine("Time comsumed {0}", stopwatch.Elapsed);
+
+        //    cts.Dispose();
+        //    Console.WriteLine("Press the Enter key to exit.");
+        //    Console.ReadLine();
+        //}
 
         static void NonBlockingConsumer(BlockingCollection<int> bc, CancellationToken ct)
         {
-            // IsCompleted == (IsAddingCompleted && Count == 0)
             while (!bc.IsCompleted)
             {
                 int nextItem;
@@ -84,11 +156,7 @@ namespace TestThreadpool
                     Console.WriteLine("Taking canceled.");
                     break;
                 }
-
-                // Slow down consumer just a little to cause
-                // collection to fill up faster, and lead to "AddBlocked"
-                // This case will add more 4 time
-                Thread.SpinWait(5000000);
+                //Thread.SpinWait(5000000);
             }
             Console.WriteLine("\r\n Success");
             Console.WriteLine("\r\nNo more items to take.");
@@ -98,20 +166,15 @@ namespace TestThreadpool
         {
             int itemToAdd = 0;
             bool success = false;
-
             do
             {
-                // Cancellation causes OCE. We know how to handle it.
                 try
                 {
-                    // A shorter timeout causes more failures.
                     success = bc.TryAdd(itemToAdd, 2, ct);
                 }
                 catch (OperationCanceledException)
                 {
                     Console.WriteLine("Add loop canceled.");
-                    // Let other threads know we're done in case
-                    // they aren't monitoring the cancellation token.
                     bc.CompleteAdding();
                     break;
                 }
@@ -119,21 +182,16 @@ namespace TestThreadpool
                 if (success)
                 {
                     AddNewItem(products[itemToAdd]);
-                    Console.WriteLine(" Add:{0}, Total: {1}", itemToAdd, bc.Count);
+                    Console.WriteLine(" Add:{0}, Total: {1}, Thread: {2}", itemToAdd, bc.Count, Thread.CurrentThread.ManagedThreadId);
                     itemToAdd++;
                 }
                 else
                 {
                     Console.Write(" AddBlocked:{0} Count = {1}", itemToAdd.ToString(), bc.Count);
-                    // Don't increment nextItem. Try again on next iteration.
-
-                    //Do something else useful instead.
                     UpdateProgress(itemToAdd);
                 }
 
             } while (itemToAdd < products.Count);
-
-            // No lock required here because only one producer.
             bc.CompleteAdding();
         }
 
@@ -145,7 +203,6 @@ namespace TestThreadpool
                 context.Products.Add(product);
                 context.SaveChanges();
             }
-
             return product.Id;
         }
 
