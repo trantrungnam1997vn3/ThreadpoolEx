@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices.ComTypes;
 using System.Threading;
 using System.Threading.Tasks;
 using TestThreadpool.Models;
@@ -12,6 +13,8 @@ namespace TestThreadpool
     class Program
     {
         static int inputs = 100;
+
+        public List<Product> Products = new List<Product>();
 
         public static List<Product> InitialProducts()
         {
@@ -32,6 +35,7 @@ namespace TestThreadpool
 
         class TryTakeDemo
         {
+
             // Demonstrates:
             //      BlockingCollection<T>.Add()
             //      BlockingCollection<T>.CompleteAdding()
@@ -48,24 +52,18 @@ namespace TestThreadpool
                         bc.Add(products[i]);
                     }
                     bc.CompleteAdding();
-                    int outerSum = 0;
+                    int outersum = 0;
 
-                    // Delegate for consuming the BlockingCollection and adding up all items
+                    //Delegate for consuming the BlockingCollection and adding up all items
+
                     Action action = () =>
                     {
                         using (var context = new ProductContext())
                         {
                             Product localItem;
                             Console.WriteLine("Thread: {0}", Thread.CurrentThread.ManagedThreadId);
-                            //while (bc.TryTake(out localItem))
-                            //{
-                            //    Console.WriteLine(" Take:{0}, Thread: {1}", localItem.Email, Thread.CurrentThread.ManagedThreadId);
-                            //    context.Products.Add(localItem);
-                            //    context.SaveChanges();
-                            //}
                             while (!bc.IsCompleted)
                             {
-                                //int nextItem;
                                 try
                                 {
                                     if (!bc.TryTake(out localItem, 0))
@@ -85,7 +83,6 @@ namespace TestThreadpool
                                     Console.WriteLine("Taking canceled.");
                                     break;
                                 }
-                                //Thread.SpinWait(5000000);
                             }
                             Console.WriteLine("\r\n Success");
                             Console.WriteLine("\r\nNo more items to take.");
@@ -98,11 +95,71 @@ namespace TestThreadpool
             }
         }
 
+        public static async Task ProgressWithAsync()
+        {
+            using (BlockingCollection<Product> bc = new BlockingCollection<Product>())
+            {
+                List<Product> products = InitialProducts();
+                // Spin up a Task to populate the BlockingCollection
+                using (Task t1 = Task.Run(() =>
+                {
+                    for (int i = 0; i < products.Count; i++)
+                    {
+                        bc.Add(products[i]);
+                    }
+                    bc.CompleteAdding();
+                }))
+                {
+                    // Spin up a Task to consume the BlockingCollection
+                    using (Task t2 = Task.Run(() =>
+                    {
+                        Action action = () =>
+                        {
+                            using (var context = new ProductContext())
+                            {
+                                Product localItem;
+                                while (!bc.IsCompleted)
+                                {
+                                    try
+                                    {
+                                        if (bc.TryTake(out localItem))
+                                        {
+                                            // Consume consume the BlockingCollection
+                                            context.Products.Add(localItem);
+                                            context.SaveChanges();
+                                            Console.WriteLine("Data :{0}, Thread Id: {1}", localItem.Email,
+                                                Thread.CurrentThread.ManagedThreadId);
+                                        }
+                                        else
+                                        {
+                                            Console.WriteLine("Take blocked");
+                                        }
+
+                                    }
+                                    catch (InvalidOperationException)
+                                    {
+                                        // An InvalidOperationException means that Take() was called on a completed collection
+                                        Console.WriteLine("That's All!");
+                                    }
+                                }
+                            }
+                        };
+
+                        Parallel.Invoke(action, action);
+                    }))
+                    {
+                        await Task.WhenAll(t1, t2);
+                    }
+                }
+            }
+        }
+
         static void Main()
         {
             Stopwatch stopwatch = new Stopwatch();
             stopwatch.Start();
-            TryTakeDemo.BC_TryTake();
+            //TryTakeDemo.BC_TryTake();
+            ProgressWithAsync().GetAwaiter().GetResult();
             stopwatch.Stop();
             Console.WriteLine("Time consuming {0}", stopwatch.Elapsed);
             Console.WriteLine("Press any key to exit.");
@@ -134,66 +191,66 @@ namespace TestThreadpool
         //    Console.ReadLine();
         //}
 
-        static void NonBlockingConsumer(BlockingCollection<int> bc, CancellationToken ct)
-        {
-            while (!bc.IsCompleted)
-            {
-                int nextItem;
-                try
-                {
-                    if (!bc.TryTake(out nextItem, 0, ct))
-                    {
-                        Console.WriteLine(" Take Blocked");
-                    }
-                    else
-                    {
-                        Console.WriteLine(" Take:{0}", nextItem);
-                    }
-                }
+        //static void NonBlockingConsumer(BlockingCollection<int> bc, CancellationToken ct)
+        //{
+        //    while (!bc.IsCompleted)
+        //    {
+        //        int nextItem;
+        //        try
+        //        {
+        //            if (!bc.TryTake(out nextItem, 0, ct))
+        //            {
+        //                Console.WriteLine(" Take Blocked");
+        //            }
+        //            else
+        //            {
+        //                Console.WriteLine(" Take:{0}", nextItem);
+        //            }
+        //        }
 
-                catch (OperationCanceledException)
-                {
-                    Console.WriteLine("Taking canceled.");
-                    break;
-                }
-                //Thread.SpinWait(5000000);
-            }
-            Console.WriteLine("\r\n Success");
-            Console.WriteLine("\r\nNo more items to take.");
-        }
+        //        catch (OperationCanceledException)
+        //        {
+        //            Console.WriteLine("Taking canceled.");
+        //            break;
+        //        }
+        //        //Thread.SpinWait(5000000);
+        //    }
+        //    Console.WriteLine("\r\n Success");
+        //    Console.WriteLine("\r\nNo more items to take.");
+        //}
 
-        static void NonBlockingProducer(BlockingCollection<int> bc, CancellationToken ct, List<Product> products)
-        {
-            int itemToAdd = 0;
-            bool success = false;
-            do
-            {
-                try
-                {
-                    success = bc.TryAdd(itemToAdd, 2, ct);
-                }
-                catch (OperationCanceledException)
-                {
-                    Console.WriteLine("Add loop canceled.");
-                    bc.CompleteAdding();
-                    break;
-                }
+        //static void NonBlockingProducer(BlockingCollection<int> bc, CancellationToken ct, List<Product> products)
+        //{
+        //    int itemToAdd = 0;
+        //    bool success = false;
+        //    do
+        //    {
+        //        try
+        //        {
+        //            success = bc.TryAdd(itemToAdd, 2, ct);
+        //        }
+        //        catch (OperationCanceledException)
+        //        {
+        //            Console.WriteLine("Add loop canceled.");
+        //            bc.CompleteAdding();
+        //            break;
+        //        }
 
-                if (success)
-                {
-                    AddNewItem(products[itemToAdd]);
-                    Console.WriteLine(" Add:{0}, Total: {1}, Thread: {2}", itemToAdd, bc.Count, Thread.CurrentThread.ManagedThreadId);
-                    itemToAdd++;
-                }
-                else
-                {
-                    Console.Write(" AddBlocked:{0} Count = {1}", itemToAdd.ToString(), bc.Count);
-                    UpdateProgress(itemToAdd);
-                }
+        //        if (success)
+        //        {
+        //            AddNewItem(products[itemToAdd]);
+        //            Console.WriteLine(" Add:{0}, Total: {1}, Thread: {2}", itemToAdd, bc.Count, Thread.CurrentThread.ManagedThreadId);
+        //            itemToAdd++;
+        //        }
+        //        else
+        //        {
+        //            Console.Write(" AddBlocked:{0} Count = {1}", itemToAdd.ToString(), bc.Count);
+        //            UpdateProgress(itemToAdd);
+        //        }
 
-            } while (itemToAdd < products.Count);
-            bc.CompleteAdding();
-        }
+        //    } while (itemToAdd < products.Count);
+        //    bc.CompleteAdding();
+        //}
 
         static int AddNewItem(Product product)
         {
@@ -211,5 +268,12 @@ namespace TestThreadpool
             double percent = ((double)i / inputs) * 100;
             Console.WriteLine("Percent complete: {0}", percent);
         }
+
+        static void UpdateCurrentProgress(int i, int total)
+        {
+            double percent = ((double)i / total) * 100;
+            Console.WriteLine("Percent complete: {0}", percent);
+        }
     }
+
 }
